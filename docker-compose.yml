@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      # ":?" makes compose fail fast if the variable is missing — no hardcoded defaults
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      PORT: ${BACKEND_PORT:?BACKEND_PORT is required}
+      APP_TIMEZONE: ${APP_TIMEZONE:?APP_TIMEZONE is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:?POSTGRES_HOST is required}
+      POSTGRES_PORT: ${POSTGRES_PORT:?POSTGRES_PORT is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    ports:
+      - '${BACKEND_PORT}:${BACKEND_PORT}'
+    healthcheck:
+      # busybox wget exits non-zero on HTTP 503, so "db down" marks the service unhealthy
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:$$PORT/health > /dev/null || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:?VITE_API_URL is required}
+    environment:
+      # Used by nginx template to proxy /api to the backend service
+      BACKEND_PORT: ${BACKEND_PORT:?BACKEND_PORT is required}
+    ports:
+      - '${FRONTEND_PORT:?FRONTEND_PORT is required}:8080'
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
