@@ -1,0 +1,230 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: nothing in this pipeline writes to the repo
+permissions:
+  contents: read
+
+# New pushes to the same branch cancel in-flight runs
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so leaked credentials in old commits are caught too
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint:
+    name: Lint (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [backend, frontend]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Prettier check
+        run: npm run format:check
+      - name: Type check
+        run: npm run typecheck
+
+  test:
+    name: Test
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # Ephemeral CI-only database, discarded with the runner
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: promotions_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_user -d promotions_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Backend unit tests (with coverage)
+        working-directory: backend
+        run: |
+          npm ci
+          npm test -- --coverage
+        env:
+          APP_TIMEZONE: America/Bogota
+
+      - name: Backend e2e tests
+        working-directory: backend
+        run: npm run test:e2e
+        env:
+          APP_TIMEZONE: America/Bogota
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: '5432'
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: promotions_test
+
+      - name: Frontend tests (with coverage)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test -- --coverage
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            backend/coverage
+            frontend/coverage
+          retention-days: 7
+
+  build:
+    name: Build image (${{ matrix.service }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service }} image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: false
+          tags: promotions-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  smoke:
+    name: Smoke test (docker compose)
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      # Sensitive values come exclusively from GitHub Secrets
+      POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      # Non-sensitive configuration is explicit
+      POSTGRES_DB: promotions
+      POSTGRES_HOST: db
+      POSTGRES_PORT: '5432'
+      BACKEND_PORT: '3000'
+      APP_TIMEZONE: America/Bogota
+      CORS_ORIGIN: http://localhost:8080
+      FRONTEND_PORT: '8080'
+      VITE_API_URL: /api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate environment (fail fast, list every missing variable)
+        run: bash scripts/check-env.sh
+
+      - name: Build .env from the environment
+        run: |
+          {
+            echo "POSTGRES_USER=${POSTGRES_USER}"
+            echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+            echo "POSTGRES_DB=${POSTGRES_DB}"
+            echo "POSTGRES_HOST=${POSTGRES_HOST}"
+            echo "POSTGRES_PORT=${POSTGRES_PORT}"
+            echo "BACKEND_PORT=${BACKEND_PORT}"
+            echo "APP_TIMEZONE=${APP_TIMEZONE}"
+            echo "CORS_ORIGIN=${CORS_ORIGIN}"
+            echo "FRONTEND_PORT=${FRONTEND_PORT}"
+            echo "VITE_API_URL=${VITE_API_URL}"
+          } > .env
+
+      - name: Start the full stack (compose waits on healthchecks)
+        run: docker compose up -d --build --wait
+
+      - name: Wait for /health to return 200
+        run: |
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${BACKEND_PORT}/health" || true)
+            echo "attempt ${attempt}/30 -> HTTP ${code}"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: /health never returned 200"
+          exit 1
+
+      - name: Assert the health body reports the database as up
+        run: |
+          body=$(curl -s "http://localhost:${BACKEND_PORT}/health")
+          echo "health body: $body"
+          echo "$body" | grep -q '"database":"up"' || {
+            echo "ERROR: /health does not report database up"
+            exit 1
+          }
+
+      - name: CRUD smoke (create a promotion, the summary must reflect it)
+        run: |
+          base="http://localhost:${BACKEND_PORT}/api"
+
+          product_id=$(curl -sf "$base/products" | jq -r '.[0].id')
+          echo "using product: $product_id"
+          test -n "$product_id" && test "$product_id" != "null"
+
+          before=$(curl -sf "$base/promotions/summary" | jq '.byStatus.SCHEDULED')
+          echo "SCHEDULED before: $before"
+
+          code=$(curl -s -o response.json -w '%{http_code}' -X POST "$base/promotions" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"CI smoke promotion\",\"productId\":\"$product_id\",\"discountType\":\"PERCENTAGE\",\"discountValue\":10,\"startDate\":\"2026-01-01\",\"endDate\":\"2026-12-31\"}")
+          echo "POST /promotions -> HTTP $code"
+          cat response.json
+          test "$code" = "201" || { echo "ERROR: expected 201"; exit 1; }
+
+          after=$(curl -sf "$base/promotions/summary" | jq '.byStatus.SCHEDULED')
+          echo "SCHEDULED after: $after"
+          test "$after" -eq "$((before + 1))" || {
+            echo "ERROR: summary does not reflect the created promotion"
+            exit 1
+          }
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down the stack
+        if: always()
+        run: docker compose down -v
