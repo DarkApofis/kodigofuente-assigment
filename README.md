@@ -10,7 +10,7 @@ Las decisiones de diseño y sus trade-offs están documentadas en [DECISIONS.md]
 | -------------- | -------------- | ---------------------------------------------- |
 | Docker Engine  | 24.x           |                                                |
 | Docker Compose | v2.20          | Se usa `--wait`, que requiere Compose v2       |
-| Node.js        | 20.x           | Solo para desarrollo local y correr los tests fuera de Docker |
+| Node.js        | 22.x           | Solo para desarrollo local y correr los tests fuera de Docker |
 
 No hace falta PostgreSQL ni Node instalados para levantar el proyecto: todo corre en contenedores.
 
@@ -67,7 +67,7 @@ Con los valores por defecto:
 
 ## Tests
 
-Fuera de Docker (requiere Node 20 y `npm ci` previo en cada carpeta):
+Fuera de Docker (requiere Node 22 y `npm ci` previo en cada carpeta):
 
 ```bash
 # Backend: 53 tests unitarios + 17 e2e (supertest, sin base de datos)
@@ -83,8 +83,8 @@ npm test
 Dentro de Docker: la imagen de producción no incluye devDependencies (deliberado: es una imagen de runtime), así que los tests se corren en un contenedor efímero de Node con el código montado:
 
 ```bash
-docker run --rm -v "$PWD/backend:/app" -w /app node:20-alpine sh -c "npm ci && npm test && npm run test:e2e"
-docker run --rm -v "$PWD/frontend:/app" -w /app node:20-alpine sh -c "npm ci && npm test"
+docker run --rm -v "$PWD/backend:/app" -w /app node:22-alpine sh -c "npm ci && npm test && npm run test:e2e"
+docker run --rm -v "$PWD/frontend:/app" -w /app node:22-alpine sh -c "npm ci && npm test"
 ```
 
 Lint y formato (mismos comandos que ejecuta el CI):
