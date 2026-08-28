@@ -4,13 +4,16 @@ import type {
   Promotion,
   PromotionStatus,
 } from '../api/types';
+import { promotionEffect } from '../ui/effect';
 import {
+  ACTION_BLOCKED_REASONS,
   DISCOUNT_TYPE_LABELS,
-  ENDED_TOOLTIP,
-  formatDate,
+  formatDateRange,
   formatDiscount,
   PROMOTION_ADVANCE,
+  READ_ONLY_LABEL,
 } from '../ui/labels';
+import { EffectIndicator } from './EffectIndicator';
 import { StatusBadge } from './StatusBadge';
 
 interface Props {
@@ -18,8 +21,11 @@ interface Props {
   products: Product[];
   categories: Category[];
   busyId: string | null;
+  today: string;
   onAdvance: (promotion: Promotion, next: PromotionStatus) => void;
+  onEdit: (promotion: Promotion) => void;
   onDelete: (promotion: Promotion) => void;
+  onCreate: () => void;
 }
 
 export function PromotionsTable({
@@ -27,102 +33,148 @@ export function PromotionsTable({
   products,
   categories,
   busyId,
+  today,
   onAdvance,
+  onEdit,
   onDelete,
+  onCreate,
 }: Props) {
   const productNames = new Map(products.map((p) => [p.id, p.name]));
   const categoryNames = new Map(categories.map((c) => [c.id, c.name]));
 
-  function targetLabel(promotion: Promotion): string {
-    if (promotion.productId) {
-      return `Producto: ${productNames.get(promotion.productId) ?? '—'}`;
-    }
-    return `Categoría: ${categoryNames.get(promotion.categoryId ?? '') ?? '—'}`;
+  function targetName(promotion: Promotion): string {
+    return promotion.productId
+      ? (productNames.get(promotion.productId) ?? '—')
+      : (categoryNames.get(promotion.categoryId ?? '') ?? '—');
+  }
+
+  if (promotions.length === 0) {
+    return (
+      <div className="empty-state">
+        <h3 className="empty-state-title">Todavía no hay promociones</h3>
+        <p className="empty-state-body">
+          Cuando crees una, queda en estado Programada y no afecta la caja hasta
+          que la actives. Las promociones activas fuera de su rango de fechas
+          aparecen marcadas como «Sin efecto hoy».
+        </p>
+        <button type="button" className="btn btn-primary" onClick={onCreate}>
+          Crear la primera promoción
+        </button>
+      </div>
+    );
   }
 
   return (
-    <table className="promotions-table">
-      <thead>
-        <tr>
-          <th scope="col">Nombre</th>
-          <th scope="col">Objetivo</th>
-          <th scope="col">Tipo</th>
-          <th scope="col">Valor</th>
-          <th scope="col">Vigencia</th>
-          <th scope="col">Estado</th>
-          <th scope="col">Acciones</th>
-        </tr>
-      </thead>
-      <tbody>
-        {promotions.length === 0 && (
+    <div className="table-scroll">
+      <table className="promotions-table">
+        <thead>
           <tr>
-            <td colSpan={7} className="empty-cell">
-              No hay promociones todavía. Crea la primera con «Nueva promoción».
-            </td>
+            <th scope="col">Nombre</th>
+            <th scope="col">Objetivo</th>
+            <th scope="col">Descuento</th>
+            <th scope="col">Rango de vigencia</th>
+            <th scope="col">Estado</th>
+            <th scope="col" className="th-effect">
+              Efecto hoy
+            </th>
+            <th scope="col">Acciones</th>
           </tr>
-        )}
-        {promotions.map((promotion) => {
-          const advance = PROMOTION_ADVANCE[promotion.status];
-          const busy = busyId === promotion.id;
-          return (
-            <tr
-              key={promotion.id}
-              className={promotion.isActiveToday ? 'row-live' : undefined}
-            >
-              <td>{promotion.name}</td>
-              <td>{targetLabel(promotion)}</td>
-              <td>{DISCOUNT_TYPE_LABELS[promotion.discountType]}</td>
-              <td className="num">{formatDiscount(promotion)}</td>
-              <td>
-                {formatDate(promotion.startDate)} –{' '}
-                {formatDate(promotion.endDate)}
-                {promotion.isActiveToday && (
-                  <span
-                    className="pill-live"
-                    title="Activa y dentro de su rango de fechas hoy"
-                  >
-                    ● Vigente hoy
-                  </span>
-                )}
-              </td>
-              <td>
-                <StatusBadge status={promotion.status} />
-              </td>
-              <td className="actions">
-                {advance ? (
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={busy}
-                    onClick={() => onAdvance(promotion, advance.next)}
-                  >
-                    {advance.label}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled
-                    title={ENDED_TOOLTIP}
-                  >
-                    Finalizar
-                  </button>
-                )}
-                {promotion.status === 'SCHEDULED' && (
-                  <button
-                    type="button"
-                    className="btn btn-danger"
-                    disabled={busy}
-                    onClick={() => onDelete(promotion)}
-                  >
-                    Eliminar
-                  </button>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {promotions.map((promotion) => {
+            const advance = PROMOTION_ADVANCE[promotion.status];
+            const effect = promotionEffect(promotion, today);
+            const reason = ACTION_BLOCKED_REASONS[promotion.status];
+            const busy = busyId === promotion.id;
+            return (
+              <tr
+                key={promotion.id}
+                className={
+                  effect.kind === 'NO_EFFECT_ATTENTION'
+                    ? 'row-attention'
+                    : undefined
+                }
+              >
+                <td>
+                  <div className="cell-name">{promotion.name}</div>
+                  {effect.kind === 'NO_EFFECT_ATTENTION' && (
+                    <p className="attention-note">
+                      Requiere atención · finalízala o extiende las fechas
+                    </p>
+                  )}
+                </td>
+                <td data-label="Objetivo">
+                  <div>
+                    {targetName(promotion)}
+                    <p className="cell-sub">
+                      {promotion.productId ? 'Producto' : 'Categoría'}
+                    </p>
+                  </div>
+                </td>
+                <td data-label="Descuento">
+                  <div>
+                    <span className="cell-value">
+                      {formatDiscount(promotion)}
+                    </span>
+                    <p className="cell-sub-sans">
+                      {DISCOUNT_TYPE_LABELS[promotion.discountType]}
+                    </p>
+                  </div>
+                </td>
+                <td data-label="Rango" className="cell-range">
+                  {formatDateRange(promotion.startDate, promotion.endDate)}
+                </td>
+                <td>
+                  <StatusBadge status={promotion.status} />
+                </td>
+                <td>
+                  <EffectIndicator effect={effect} />
+                </td>
+                <td>
+                  <div className="actions">
+                    <div className="actions-row">
+                      {advance && (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy}
+                          onClick={() => onAdvance(promotion, advance.next)}
+                        >
+                          {advance.label}
+                        </button>
+                      )}
+                      {promotion.status !== 'ENDED' && (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy}
+                          onClick={() => onEdit(promotion)}
+                        >
+                          Editar
+                        </button>
+                      )}
+                      {promotion.status === 'SCHEDULED' && (
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          disabled={busy}
+                          onClick={() => onDelete(promotion)}
+                        >
+                          Eliminar
+                        </button>
+                      )}
+                      {promotion.status === 'ENDED' && (
+                        <span className="action-locked">{READ_ONLY_LABEL}</span>
+                      )}
+                    </div>
+                    {reason && <p className="action-reason">{reason}</p>}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

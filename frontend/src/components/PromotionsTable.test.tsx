@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Category, Product, Promotion } from '../api/types';
 import { PromotionsTable } from './PromotionsTable';
 
+const TODAY = '2026-08-28';
+
 const products: Product[] = [
   { id: 'p1', name: 'Café americano', categoryId: 'c1', createdAt: '' },
 ];
@@ -33,8 +35,11 @@ function renderTable(promotions: Promotion[]) {
       products={products}
       categories={categories}
       busyId={null}
+      today={TODAY}
       onAdvance={vi.fn()}
+      onEdit={vi.fn()}
       onDelete={vi.fn()}
+      onCreate={vi.fn()}
     />,
   );
 }
@@ -46,7 +51,7 @@ function rowOf(name: string): HTMLElement {
 }
 
 describe('PromotionsTable', () => {
-  it('una promoción activa no muestra el botón Eliminar (solo puede finalizarse)', () => {
+  it('una promoción activa no muestra Eliminar y explica el motivo por escrito', () => {
     renderTable([
       promotion({ id: '1', name: 'Promo activa', status: 'ACTIVE' }),
     ]);
@@ -56,6 +61,12 @@ describe('PromotionsTable', () => {
     expect(
       within(row).getByRole('button', { name: 'Finalizar' }),
     ).toBeEnabled();
+    expect(within(row).getByRole('button', { name: 'Editar' })).toBeEnabled();
+    expect(
+      within(row).getByText(
+        'No se puede eliminar: solo se eliminan promociones Programadas.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('una promoción programada sí puede eliminarse y su acción es Activar', () => {
@@ -70,21 +81,26 @@ describe('PromotionsTable', () => {
     expect(within(row).getByRole('button', { name: 'Activar' })).toBeEnabled();
   });
 
-  it('una promoción finalizada deshabilita avanzar y el tooltip explica por qué', () => {
+  it('una promoción finalizada es de solo lectura: sin acciones, con etiqueta Histórico', () => {
     renderTable([
-      promotion({ id: '3', name: 'Promo finalizada', status: 'ENDED' }),
+      promotion({
+        id: '3',
+        name: 'Promo finalizada',
+        status: 'ENDED',
+        endDate: '2026-06-04',
+      }),
     ]);
 
     const row = rowOf('Promo finalizada');
-    const advanceButton = within(row).getByRole('button', {
-      name: 'Finalizar',
-    });
-    expect(advanceButton).toBeDisabled();
-    expect(advanceButton).toHaveAttribute(
-      'title',
-      expect.stringContaining('finalizada no admite más cambios'),
-    );
-    expect(within(row).queryByRole('button', { name: 'Eliminar' })).toBeNull();
+    expect(within(row).queryByRole('button')).toBeNull();
+    expect(
+      within(row).getByText('Histórico · solo lectura'),
+    ).toBeInTheDocument();
+    expect(
+      within(row).getByText(
+        'Una promoción Finalizada no se modifica ni se elimina.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('una promoción vigente hoy muestra el indicador «Vigente hoy»', () => {
@@ -98,7 +114,37 @@ describe('PromotionsTable', () => {
     ]);
 
     expect(
-      within(rowOf('Promo vigente')).getByText('● Vigente hoy'),
+      within(rowOf('Promo vigente')).getByText('Vigente hoy'),
+    ).toBeInTheDocument();
+  });
+
+  it('una activa con fechas vencidas queda marcada como «Requiere atención»', () => {
+    renderTable([
+      promotion({
+        id: '5',
+        name: 'Promo vencida',
+        status: 'ACTIVE',
+        startDate: '2026-06-29',
+        endDate: '2026-07-29',
+        isActiveToday: false,
+      }),
+    ]);
+
+    const row = rowOf('Promo vencida');
+    expect(row).toHaveClass('row-attention');
+    expect(within(row).getByText('Sin efecto hoy')).toBeInTheDocument();
+    expect(within(row).getByText(/Requiere atención/)).toBeInTheDocument();
+    expect(
+      within(row).getByText('Venció hace 30 días y sigue en Activa'),
+    ).toBeInTheDocument();
+  });
+
+  it('sin promociones muestra el estado vacío con su llamada a la acción', () => {
+    renderTable([]);
+
+    expect(screen.getByText('Todavía no hay promociones')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Crear la primera promoción' }),
     ).toBeInTheDocument();
   });
 });

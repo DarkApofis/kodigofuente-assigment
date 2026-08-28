@@ -33,6 +33,16 @@ export function createPromotion(
   });
 }
 
+export function updatePromotion(
+  id: string,
+  input: CreatePromotionInput,
+): Promise<Promotion> {
+  return request<Promotion>(`/promotions/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
 export function changePromotionStatus(
   id: string,
   status: PromotionStatus,

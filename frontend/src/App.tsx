@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { errorMessage } from './api/client';
 import {
   changePromotionStatus,
@@ -15,9 +15,12 @@ import type {
   PromotionStatus,
   PromotionsSummary,
 } from './api/types';
-import { CreatePromotionForm } from './components/CreatePromotionForm';
+import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
+import { PromotionFormDialog } from './components/PromotionFormDialog';
 import { PromotionsTable } from './components/PromotionsTable';
 import { SummaryCards } from './components/SummaryCards';
+import { todayIsoDate } from './ui/effect';
+import { formatShortDate } from './ui/labels';
 
 type Loadable<T> =
   | { status: 'loading' }
@@ -29,6 +32,9 @@ interface DashboardData {
   promotions: Promotion[];
 }
 
+type FormState =
+  { mode: 'create' } | { mode: 'edit'; promotion: Promotion } | null;
+
 export function App() {
   const [dashboard, setDashboard] = useState<Loadable<DashboardData>>({
     status: 'loading',
@@ -36,9 +42,12 @@ export function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [form, setForm] = useState<FormState>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Promotion | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const today = useMemo(() => todayIsoDate(), []);
 
   const refresh = useCallback(async () => {
     try {
@@ -85,94 +94,182 @@ export function App() {
     }
   }
 
-  async function handleDelete(promotion: Promotion) {
-    if (!window.confirm(`¿Eliminar la promoción «${promotion.name}»?`)) return;
+  async function handleDeleteConfirmed(promotion: Promotion) {
     setActionError(null);
     setBusyId(promotion.id);
     try {
       await deletePromotion(promotion.id);
+      setDeleteTarget(null);
       await refresh();
     } catch (error) {
+      setDeleteTarget(null);
       setActionError(errorMessage(error));
     } finally {
       setBusyId(null);
     }
   }
 
+  function targetLabel(promotion: Promotion): string {
+    if (promotion.productId) {
+      const name =
+        products.find((p) => p.id === promotion.productId)?.name ?? '—';
+      return `${name} · Producto`;
+    }
+    const name =
+      categories.find((c) => c.id === promotion.categoryId)?.name ?? '—';
+    return `${name} · Categoría`;
+  }
+
   const catalogReady = products.length > 0 || categories.length > 0;
 
   return (
-    <main className="layout">
-      <header className="page-header">
-        <h1>Gestión de Promociones</h1>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => setPanelOpen(true)}
-          disabled={!catalogReady}
-          title={
-            catalogReady
-              ? undefined
-              : 'No se pudo cargar el catálogo de productos y categorías'
-          }
-        >
-          Nueva promoción
-        </button>
-      </header>
-
-      {actionError && (
-        <div role="alert" className="banner banner-error">
-          {actionError}
-        </div>
-      )}
-      {catalogError && (
-        <div role="alert" className="banner banner-error">
-          Error al cargar el catálogo: {catalogError}
-        </div>
-      )}
-
-      {dashboard.status === 'loading' && (
-        <p className="state-message">Cargando promociones…</p>
-      )}
-
-      {dashboard.status === 'error' && (
-        <div className="state-message state-error">
-          <p>No se pudieron cargar las promociones: {dashboard.message}</p>
-          <button type="button" className="btn" onClick={() => void refresh()}>
-            Reintentar
+    <>
+      <header className="app-bar">
+        <div className="app-bar-inner">
+          <div>
+            <h1>Promociones</h1>
+            <p className="app-bar-subtitle">Hoy {formatShortDate(today)}</p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setForm({ mode: 'create' })}
+            disabled={!catalogReady}
+            title={
+              catalogReady
+                ? undefined
+                : 'No se pudo cargar el catálogo de productos y categorías'
+            }
+          >
+            Crear promoción
           </button>
         </div>
-      )}
+      </header>
 
-      {dashboard.status === 'ready' && (
-        <>
-          <SummaryCards summary={dashboard.data.summary} />
-          <section aria-label="Listado de promociones" className="table-wrap">
-            <PromotionsTable
-              promotions={dashboard.data.promotions}
-              products={products}
-              categories={categories}
-              busyId={busyId}
-              onAdvance={(promotion, next) =>
-                void handleAdvance(promotion, next)
-              }
-              onDelete={(promotion) => void handleDelete(promotion)}
-            />
+      <main className="layout">
+        {actionError && (
+          <div role="alert" className="banner banner-error">
+            {actionError}
+          </div>
+        )}
+        {catalogError && (
+          <div role="alert" className="banner banner-error">
+            Error al cargar el catálogo: {catalogError}
+          </div>
+        )}
+
+        {dashboard.status === 'loading' && (
+          <section className="table-card" aria-label="Cargando promociones">
+            <div className="table-card-header">
+              <h2 className="table-card-title">Promociones</h2>
+            </div>
+            <div style={{ padding: 24 }}>
+              <p className="dialog-text">Cargando promociones…</p>
+              <div className="skeleton-rows" aria-hidden="true">
+                <div className="skeleton-row" />
+                <div className="skeleton-row" />
+                <div className="skeleton-row" />
+              </div>
+            </div>
           </section>
-        </>
-      )}
+        )}
 
-      {panelOpen && (
-        <CreatePromotionForm
+        {dashboard.status === 'error' && (
+          <section className="table-card" aria-label="Error de carga">
+            <div className="table-card-header">
+              <h2 className="table-card-title">Promociones</h2>
+            </div>
+            <div style={{ padding: 24 }}>
+              <div role="alert" className="alert">
+                <div className="alert-title">
+                  <span className="alert-title-mark" aria-hidden="true" />
+                  No pudimos cargar las promociones
+                </div>
+                <p className="alert-body">
+                  {dashboard.message}. Los precios en caja no cambiaron: siguen
+                  aplicando las promociones que ya estaban vigentes.
+                </p>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void refresh()}
+                >
+                  Reintentar
+                </button>
+              </div>
+              {/* Disabled skeleton, not an empty table: we are not claiming
+                  there are no promotions */}
+              <div className="skeleton-rows" aria-hidden="true">
+                <div className="skeleton-row" />
+                <div className="skeleton-row" />
+                <div className="skeleton-row" />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {dashboard.status === 'ready' && (
+          <>
+            <SummaryCards summary={dashboard.data.summary} today={today} />
+            <section aria-label="Listado de promociones" className="table-card">
+              <div className="table-card-header">
+                <h2 className="table-card-title">
+                  {dashboard.data.promotions.length === 1
+                    ? '1 promoción'
+                    : `${dashboard.data.promotions.length} promociones`}
+                </h2>
+                <p className="legend">
+                  <span>
+                    <strong>Estado:</strong> ciclo de vida que tú cambias a
+                    mano.
+                  </span>
+                  <span className="legend-divider" aria-hidden="true" />
+                  <span>
+                    <strong>Efecto hoy:</strong> si aplica en caja hoy (Activa +
+                    fecha dentro del rango).
+                  </span>
+                </p>
+              </div>
+              <PromotionsTable
+                promotions={dashboard.data.promotions}
+                products={products}
+                categories={categories}
+                busyId={busyId}
+                today={today}
+                onAdvance={(promotion, next) =>
+                  void handleAdvance(promotion, next)
+                }
+                onEdit={(promotion) => setForm({ mode: 'edit', promotion })}
+                onDelete={setDeleteTarget}
+                onCreate={() => setForm({ mode: 'create' })}
+              />
+            </section>
+          </>
+        )}
+      </main>
+
+      {form && (
+        <PromotionFormDialog
           products={products}
           categories={categories}
-          onClose={() => setPanelOpen(false)}
-          onCreated={() => {
-            setPanelOpen(false);
+          promotion={form.mode === 'edit' ? form.promotion : undefined}
+          onClose={() => setForm(null)}
+          onSaved={() => {
+            setForm(null);
             void refresh();
           }}
         />
       )}
-    </main>
+
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          promotion={deleteTarget}
+          targetLabel={targetLabel(deleteTarget)}
+          busy={busyId === deleteTarget.id}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => void handleDeleteConfirmed(deleteTarget)}
+        />
+      )}
+    </>
   );
 }
